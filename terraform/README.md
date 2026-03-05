@@ -26,7 +26,7 @@ Provisions all AWS resources required to run the CW SRE Agent on Amazon Bedrock 
 | `aws_ecr_repository`                   | `ecr.tf`        | ECR repository for the arm64 image                                                    |
 | `aws_ecr_lifecycle_policy`             | `ecr.tf`        | Retains the last N images, expires older ones                                         |
 | `aws_iam_role`                         | `iam.tf`        | Execution role for the AgentCore runtime                                              |
-| `aws_iam_role_policy`                  | `iam.tf`        | Inline policy: CloudWatch, Bedrock, ECR, Memory permissions                           |
+| `aws_iam_role_policy`                  | `iam.tf`        | Inline policy: CloudWatch, Bedrock, ECR, STS, Memory permissions              |
 | `aws_cloudwatch_log_group`             | `cloudwatch.tf` | Structured audit log group for agent executions                                       |
 | `null_resource` (docker build)         | `docker.tf`     | Builds and pushes the arm64 image on source changes                                   |
 
@@ -106,6 +106,7 @@ terraform apply -var="image_tag=$(git rev-parse --short HEAD)"
 | `enable_memory_summarization` | `bool`   | `true`                        | Attach a SUMMARIZATION strategy to the Memory resource                                               |
 | `memory_event_expiry_days`    | `number` | `7`                           | Days before Memory events expire automatically                                                       |
 | `agent_log_group_name`        | `string` | `""`                          | Override log group name. Defaults to `/aws/bedrock-agentcore/<agent_name>`                           |
+| `agent_log_retention_days`    | `number` | `1`                           | Retention period in days for the agent execution log group                                           |
 
 
 ## Outputs

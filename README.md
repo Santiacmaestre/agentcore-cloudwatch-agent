@@ -1,19 +1,20 @@
-# agentcore-devops-agent
+# agentcore-cloudwatch-agent
 
 Proof-of-concept SRE incident-troubleshooting agent built on **Amazon Bedrock AgentCore**.  
-The agent uses a conversational CLI to investigate CloudWatch Logs, metrics, alarms, Application Signals SLOs, and CloudTrail events across multiple AWS accounts and regions — all without hardcoding a single tool name.
+The agent uses a conversational interface to investigate CloudWatch Logs, metrics, and alarms across multiple AWS accounts and regions — powered by the **Strands Agents SDK** and the CloudWatch MCP server.
 
 
 ## Overview
 
-| Layer               | Technology                                                |
-|---------------------|-----------------------------------------------------------|
-| LLM                 | Amazon Nova Premier / Nova Pro via Bedrock Converse API   |
-| Runtime             | Amazon Bedrock AgentCore (arm64 container)                |
-| Persistent memory   | AgentCore Memory with session-scoped summarization        |
-| Observability tools | awslabs MCP servers (CloudWatch, App Signals, CloudTrail) |
-| Infrastructure      | Terraform (AWS provider ≥ 6.17)                           |
-| Application         | Python 3.12+ packaged with `uv`                           |
+| Layer               | Technology                                                    |
+|---------------------|---------------------------------------------------------------|
+| LLM                 | Amazon Nova Premier / Nova Pro via Strands Agents SDK         |
+| Agentic framework   | Strands Agents SDK (`strands-agents`, `strands-agents-tools`) |
+| Runtime             | Amazon Bedrock AgentCore (arm64 container)                    |
+| Persistent memory   | AgentCore Memory with session-scoped summarization            |
+| Observability tools | `awslabs.cloudwatch-mcp-server` (MCP over stdio)             |
+| Infrastructure      | Terraform (AWS provider ≥ 6.17)                               |
+| Application         | Python 3.12+ packaged with `uv`                               |
 
 
 ## Architecture
@@ -29,13 +30,13 @@ The agent uses a conversational CLI to investigate CloudWatch Logs, metrics, ala
                           │  ┌──────────────────────────────────────┐  │
                           │  │  Python container (cw_sre_agent)     │  │
                           │  │  ┌──────────┐  ┌───────────────────┐ │  │
-                          │  │  │  CLI /   │  │  Bedrock Converse │ │  │
-                          │  │  │  Wizard  │  │  (agentic loop)   │ │  │
+                          │  │  │  CLI /   │  │  Strands Agent    │ │  │
+                          │  │  │  REPL    │  │  (agentic loop)   │ │  │
                           │  │  └────┬─────┘  └─────────┬─────────┘ │  │
                           │  │       │                  │           │  │
                           │  │  ┌────▼──────────────────▼─────────┐ │  │
-                          │  │  │         MCP Manager             │ │  │
-                          │  │  │  CloudWatch · AppSignals · Trail│ │  │
+                          │  │  │     MCPClient (Strands SDK)     │ │  │
+                          │  │  │     CloudWatch MCP Server       │ │  │
                           │  │  └─────────────────────────────────┘ │  │
                           │  └──────────────────────────────────────┘  │
                           │                   │                        │
@@ -44,8 +45,7 @@ The agent uses a conversational CLI to investigate CloudWatch Logs, metrics, ala
                                               │
                           ┌───────────────────▼───────────────────────┐
                           │  Target AWS Accounts (via sts:AssumeRole) │
-                          │  CloudWatch Logs · Metrics · CloudTrail   │
-                          │  Application Signals SLOs                 │
+                          │  CloudWatch Logs · Metrics · Alarms       │
                           └───────────────────────────────────────────┘
 ```
 
@@ -53,7 +53,7 @@ The agent uses a conversational CLI to investigate CloudWatch Logs, metrics, ala
 ## Repository Layout
 
 ```
-agentcore-devops-agent/
+agentcore-cloudwatch-agent/
 ├── app/                      # Python agent application
 │   ├── src/cw_sre_agent/     # Agent source code
 │   ├── scripts/              # build_and_push.sh, run_local.sh
@@ -123,13 +123,14 @@ cp .env.example .env   # fill in AWS_REGION, MODEL_ID, MEMORY_ID, MEMORY_ACTOR_I
 ./scripts/run_local.sh
 ```
 
-See [app/README.md](app/README.md) for the full wizard walkthrough, interactive commands, cross-account setup, and build instructions.
+See [app/README.md](app/README.md) for the interactive commands, cross-account setup, and build instructions.
 
 
 ## Key Design Decisions
 
-- **No hardcoded tool names** – the MCP manager discovers all tools dynamically via `tools/list`, so server updates are reflected automatically.
-- **Cross-account via STS** – assumed-role credentials are injected as environment variables into each MCP subprocess, keeping the agent in the trusted account.
+- **Strands Agents SDK** – the entire agentic loop (tool discovery, execution, retry, conversation history) is delegated to Strands, replacing manual Bedrock Converse API calls.
+- **Dynamic tool discovery** – the Strands `MCPClient` discovers all tools via the MCP `tools/list` protocol, so CloudWatch MCP server updates are reflected automatically.
+- **Cross-account via STS** – assumed-role credentials are injected as environment variables into the MCP subprocess, keeping the agent in the trusted account.
 - **arm64 only** – AgentCore runtimes run exclusively on arm64; the Docker build uses `buildx --platform linux/arm64`.
 - **Content-addressable Docker builds** – `docker.tf` hashes source files as Terraform triggers so the image is only rebuilt when code actually changes.
 
