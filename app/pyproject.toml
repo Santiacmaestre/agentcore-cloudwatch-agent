@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cw-sre-agent"
+version = "0.1.0"
+description = "Conversational SRE incident-troubleshooting agent powered by AWS Bedrock AgentCore + MCP servers"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "SRE Platform Team" }]
+
+dependencies = [
+    # AWS
+    "boto3>=1.34.0",
+    "botocore>=1.34.0",
+
+    # Strands Agents SDK — handles agentic loop, Bedrock model, MCP tools
+    "strands-agents>=0.1.0",
+    "strands-agents-tools>=0.1.0",
+
+    # MCP servers — installed directly in the venv (no uvx at runtime)
+    "awslabs.cloudwatch-mcp-server>=0.0.19",
+
+    # CLI + TUI
+    "click>=8.1.7",
+    "rich>=13.7.0",
+
+    # Time parsing
+    "dateparser>=1.2.0",
+    "python-dateutil>=2.9.0",
+
+    # Timezone support (stdlib zoneinfo + backport for Python <3.9)
+    "tzdata>=2024.1",
+
+    # .env file support
+    "python-dotenv>=1.0.0",
+
+    # HTTP client (for MCP HTTP transport if needed)
+    "httpx>=0.27.0",
+
+    # HTTP server (AgentCore container entrypoint)
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+
+    # Structured logging helpers
+    "python-json-logger>=2.0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.8.0",
+    "ruff>=0.3.0",
+    "boto3-stubs[bedrock-agent-runtime,sts,logs,cloudwatch]>=1.34.0",
+]
+
+[project.scripts]
+cw-sre-agent = "cw_sre_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cw_sre_agent"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
