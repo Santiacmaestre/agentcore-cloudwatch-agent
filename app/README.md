@@ -2,9 +2,10 @@
 
 Conversational SRE incident-troubleshooting agent powered by:
 
-- **AWS Bedrock** — Amazon Nova Premier / Nova Pro via Converse API
+- **Strands Agents SDK** — agentic loop, tool discovery, conversation management
+- **AWS Bedrock** — Amazon Nova Premier / Nova Pro
 - **AWS Bedrock AgentCore** — managed runtime and persistent memory
-- **MCP servers** — CloudWatch, CloudWatch Application Signals, CloudTrail (official `awslabs` packages)
+- **CloudWatch MCP server** — `awslabs.cloudwatch-mcp-server` (Logs Insights, metrics, alarms)
 
 > **Back to root:** [../README.md](../README.md) | **Infrastructure:** [../terraform/README.md](../terraform/README.md)
 
@@ -13,13 +14,14 @@ Conversational SRE incident-troubleshooting agent powered by:
 
 1. [Local Quick Start](#local-quick-start)
 2. [Environment Variables](#environment-variables)
-3. [Pre-flight Wizard](#pre-flight-wizard)
-4. [Interactive Commands](#interactive-commands)
-5. [Invoke Remote Runtime](#invoke-remote-runtime)
-6. [Build & Push to ECR](#build--push-to-ecr)
-7. [Source Layout](#source-layout)
-8. [MCP Servers](#mcp-servers)
-9. [Cross-Account Access](#cross-account-access)
+3. [Interactive Commands](#interactive-commands)
+4. [Invoke Remote Runtime](#invoke-remote-runtime)
+5. [Build & Push to ECR](#build--push-to-ecr)
+6. [Source Layout](#source-layout)
+7. [MCP Server](#mcp-server)
+8. [Cross-Account Access](#cross-account-access)
+9. [Logging](#logging)
+10. [Exported Bundles](#exported-bundles)
 
 
 ## Local Quick Start
@@ -80,32 +82,12 @@ cw-sre-agent --model amazon.nova-pro-v1:0
 | `AGENT_LOG_GROUP`  | —       | CloudWatch log group for audit logs      |
 
 
-## Pre-flight Wizard
-
-On every session start the agent runs a **10-step wizard** before any tool is invoked:
-
-| Step | Input                                                                                        |
-|------|----------------------------------------------------------------------------------------------|
-| 1    | Session ID (auto-generated UUID or custom)                                                   |
-| 2    | Timezone (default: `America/Bogota`)                                                         |
-| 3    | Target AWS regions (mandatory, comma-separated)                                              |
-| 4    | Log groups to query per region                                                               |
-| 5    | Time window — absolute (`2026-03-01T10:00/11:00`) or relative (`last 2h`, `últimas 2 horas`) |
-| 6    | Time-chunk strategy — window size + optional sampling                                        |
-| 7    | Cross-account role mapping (`account_id → role_arn`)                                         |
-| 8    | Analysis objectives (error patterns / CloudTrail / App Signals)                              |
-| 9    | Output detail level (executive summary or full evidence)                                     |
-| 10   | Confirmation before execution                                                                |
-
-The agent will **not** call any tool until step 10 is confirmed.
-
-
 ## Interactive Commands
 
 | Command               | Description                                     |
 |-----------------------|-------------------------------------------------|
 | `/help`               | Show command reference                          |
-| `/reset`              | Clear conversation and restart the wizard       |
+| `/reset`              | Clear conversation and restart                  |
 | `/summarize`          | Print memory summary for the current session    |
 | `/recall <sessionId>` | Reload a previous session from AgentCore Memory |
 | `/export`             | Export investigation bundle to `./exports/`     |
@@ -160,45 +142,44 @@ export AWS_REGION=us-east-1
 
 ```
 src/cw_sre_agent/
+├── __init__.py       – Package version
 ├── __main__.py       – Package entry-point
 ├── cli.py            – Click CLI + REPL loop
-├── wizard.py         – 10-step pre-flight wizard
-├── agent.py          – Bedrock Converse agentic loop + tool dispatch
+├── agent.py          – Strands Agent factory + system prompt builder
 ├── config.py         – Environment variable loading and validation
+├── server.py         – FastAPI HTTP server (AgentCore runtime entry-point)
 ├── logging.py        – JSON structured logging → stdout + CloudWatch
-├── timeparse.py      – Human/absolute time range parsing and chunking
 ├── memory.py         – AgentCore Memory: save, recall, summarize
 ├── export.py         – Investigation bundle export to JSON
-├── server.py         – AgentCore runtime entry-point (HTTP server mode)
-├── mcp/
-│   ├── manager.py    – MCP server lifecycle + dynamic tool discovery
-│   └── transport.py  – Stdio subprocess config for awslabs MCP servers
 └── aws/
+    ├── __init__.py
     ├── assume_role.py    – sts:AssumeRole factory with session caching
     └── session_cache.py  – TTL-based credential cache (55 min TTL)
 ```
 
 
-## MCP Servers
+## MCP Server
 
-All tools are discovered dynamically at runtime via the MCP `tools/list` protocol.  
+Tools are discovered dynamically at runtime via the MCP `tools/list` protocol.  
 Tool names are **never hardcoded** — adding or renaming tools in a server update is reflected automatically.
 
-| Package                                            | Capabilities                                         |
-|----------------------------------------------------|------------------------------------------------------|
-| `awslabs.cloudwatch-mcp-server`                    | CloudWatch Logs Insights queries, metrics, alarms    |
-| `awslabs.cloudwatch-applicationsignals-mcp-server` | Service health, SLOs, latency analysis               |
-| `awslabs.cloudtrail-mcp-server`                    | API event history, infrastructure change correlation |
+| Package                         | Capabilities                                      |
+|---------------------------------|---------------------------------------------------|
+| `awslabs.cloudwatch-mcp-server` | CloudWatch Logs Insights queries, metrics, alarms |
 
-Each server is started with `uvx --quiet <package>` as a managed subprocess.  
-For cross-account access, assumed-role credentials are injected as `AWS_*` environment variables.
+The MCP server is installed as a pip dependency (see `pyproject.toml`) and started as a
+stdio subprocess via Strands `MCPClient` wrapping `mcp.client.stdio.stdio_client`.
+For cross-account access, assumed-role credentials are injected as `AWS_*` environment
+variables into the subprocess.
 
 
 ## Cross-Account Access
 
-The wizard accepts a mapping of `account_id → role_arn`.  
-`AssumeRoleSessionFactory` calls `sts:AssumeRole` and caches credentials with a 55-minute TTL.  
-MCP server subprocesses inherit the credentials via environment variables.
+When a user provides an IAM role ARN in the conversation, the agent:
+
+1. Detects the `arn:aws:iam::<account_id>:role/<name>` pattern from message history.
+2. Calls `sts:AssumeRole` via `AssumeRoleSessionFactory` and caches credentials with a 55-minute TTL.
+3. Recreates the MCP client with the new credentials injected as environment variables.
 
 Required trust policy in each **target account**:
 
@@ -210,9 +191,9 @@ Required trust policy in each **target account**:
     "Action": [
       "logs:StartQuery",
       "logs:GetQueryResults",
-      "cloudwatch:GetMetricData",
-      "cloudtrail:LookupEvents",
-      "application-signals:*"
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+      "cloudwatch:GetMetricData"
     ],
     "Resource": "*"
   }]
@@ -220,22 +201,18 @@ Required trust policy in each **target account**:
 ```
 
 
-
 ## Logging
 
 Every turn is logged as a JSON object to:
 - **stdout** (always, picked up by AgentCore's built-in log stream)
 
-Logged fields include: `correlation_id`, `session_id`, `user_prompt`, `wizard_state`,
+Logged fields include: `correlation_id`, `session_id`, `user_prompt`,
 `tool_calls`, `tool_outputs`, `final_answer`, `exceptions`, `regions`, `account_ids`.
-
-Nothing is redacted.
 
 
 ## Exported Bundles
 
 Use `/export` or `--export` to write a JSON bundle containing:
-- Full wizard configuration
 - All conversation turns
 - All tool calls with parameters and outputs
 - Findings and metadata
