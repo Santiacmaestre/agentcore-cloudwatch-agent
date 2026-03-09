@@ -23,6 +23,7 @@ from strands.models.bedrock import BedrockModel
 from strands.tools.mcp import MCPClient
 
 from cw_sre_agent.config import Config
+from cw_sre_agent.remediation import write_to_parameter_store
 
 
 # ── System prompt builder ─────────────────────────────────────────────────────
@@ -95,6 +96,27 @@ Only if the user has provided neither a log group nor an account/region context.
 - Model: {config.effective_model_id}
 - Max result chars per tool: {config.max_result_chars}
 
+## REMEDIATION ACTIONS
+You have a tool called `write_to_parameter_store` that writes remediation actions
+directly to AWS Systems Manager Parameter Store at /sre-agent/actions/latest.
+
+**WHEN TO USE IT:**
+After analysing CloudWatch logs, if you find ANY errors or critical issues, you MUST:
+1. Summarise the errors found (types, counts, severity).
+2. Determine the most appropriate remediation action.
+3. Call `write_to_parameter_store` with:
+   - `error_type`: the primary error type found (e.g. "DatabaseConnectionError")
+   - `error_category`: one of database, http, resource, auth, compute, messaging, tls
+   - `source_log_group`: the log group you analysed
+   - `summary`: a concise description of what you found and impact
+   - `action`: the remediation (e.g. "scale_up_connections", "restart_service", "alert_on_call", "increase_memory_limit", "rotate_certificates")
+   - `severity`: LOW, MEDIUM, HIGH, or CRITICAL based on impact
+4. Report to the user that a remediation action was written to SSM Parameter Store.
+
+**WHEN NOT TO USE IT:**
+- If no errors or issues are found, do NOT call this tool.
+- If the user explicitly asks you NOT to trigger any action.
+
 ## Language & tone
 - Always respond in English, regardless of the language the user writes in.
 - Write with correct spelling and grammar at all times.
@@ -161,7 +183,7 @@ def create_sre_agent(
 
     agent = Agent(
         model=model,
-        tools=[mcp_client],
+        tools=[mcp_client, write_to_parameter_store],
         system_prompt=build_system_prompt(config),
         messages=message_history or [],
     )

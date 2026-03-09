@@ -29,12 +29,12 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
   }
 
   environment_variables = {
-    AWS_REGION       = var.region
-    MODEL_ID         = var.model_id
+    AWS_REGION      = var.region
+    MODEL_ID        = var.model_id
     MAX_RESULT_CHARS = tostring(var.max_result_chars)
-    MEMORY_ID        = aws_bedrockagentcore_memory.this.id
-    MEMORY_ACTOR_ID  = var.memory_actor_id
-    AGENT_LOG_GROUP  = aws_cloudwatch_log_group.agent_execution.name
+    MEMORY_ID       = aws_bedrockagentcore_memory.this.id
+    MEMORY_ACTOR_ID = var.memory_actor_id
+    AGENT_LOG_GROUP = aws_cloudwatch_log_group.agent_execution.name
   }
 
   depends_on = [

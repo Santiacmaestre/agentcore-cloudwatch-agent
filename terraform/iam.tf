@@ -101,6 +101,13 @@ data "aws_iam_policy_document" "runtime_policy" {
     ]
     resources = ["arn:aws:bedrock-agentcore:${var.region}:*:memory/${aws_bedrockagentcore_memory.this.id}"]
   }
+
+  # Allows the agent to write remediation actions to SSM Parameter Store
+  statement {
+    sid       = "SSMParameterWrite"
+    actions   = ["ssm:PutParameter"]
+    resources = ["arn:aws:ssm:${var.region}:*:parameter/sre-agent/*"]
+  }
 }
 
 # Attaches the permissions policy inline to avoid a separate managed policy resource

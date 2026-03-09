@@ -17,6 +17,9 @@ locals {
   ecr_registry = aws_ecr_repository.agent.repository_url
 }
 
+# Current AWS account identity
+data "aws_caller_identity" "current" {}
+
 # IAM identifiers composed from the agent name to keep naming consistent
 locals {
   runtime_role_name          = "${var.agent_name}_runtime_role"
@@ -24,7 +27,7 @@ locals {
   # :* suffix is required for CloudWatch Logs resource ARNs in IAM policies
   agentcore_log_arn = "arn:aws:logs:${var.region}:*:log-group:/aws/bedrock-agentcore/*:*"
   # IAM role created in iam.tf
-  runtime_role_arn  = aws_iam_role.runtime.arn
+  runtime_role_arn = aws_iam_role.runtime.arn
 }
 
 # Log group name: use the operator-supplied value or fall back to the

@@ -40,3 +40,18 @@ output "agent_execution_log_group" {
   value = aws_cloudwatch_log_group.agent_execution.name
 }
 
+# Demo log group for injected simulated application logs
+output "demo_log_group" {
+  value = aws_cloudwatch_log_group.demo_app_logs.name
+}
+
+# Log watcher Lambda function name (triggered by CloudWatch Logs subscription filter)
+output "log_watcher_lambda_name" {
+  value = aws_lambda_function.log_watcher.function_name
+}
+
+# SSM parameter path where the agent writes remediation actions
+output "remediation_parameter_name" {
+  value = aws_ssm_parameter.remediation_latest.name
+}
+

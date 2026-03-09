@@ -30,7 +30,7 @@ variable "agent_name" {
 variable "model_id" {
   type        = string
   description = "Bedrock model or cross-region inference profile ID invoked by the container."
-  default     = "us.amazon.nova-premier-v1:0"
+  default     = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
 }
 
 # Identifies the ECR repository that stores the agent container image
@@ -97,5 +97,12 @@ variable "agent_log_retention_days" {
   type        = number
   description = "Retention period in days for the agent execution log group."
   default     = 1
+}
+
+# CloudWatch Log Group name where the inject_demo_logs.py script writes simulated app logs
+variable "demo_log_group_name" {
+  type        = string
+  description = "Log group name for demo application logs injected by scripts/inject_demo_logs.py."
+  default     = "/demo/app-logs"
 }
 
