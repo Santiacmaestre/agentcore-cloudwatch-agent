@@ -14,9 +14,9 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
 | Agentic framework   | Strands Agents SDK (`strands-agents`, `strands-agents-tools`) |
 | Runtime             | Amazon Bedrock AgentCore (arm64 container)                    |
 | Persistent memory   | AgentCore Memory with session-scoped summarization            |
-| Observability tools | `awslabs.cloudwatch-mcp-server` (MCP over stdio)             |
-| Log monitoring      | CloudWatch Logs Subscription Filter → Lambda watcher         |
-| Remediation         | Agent writes directly to SSM Parameter Store (boto3)         |
+| Observability tools | `awslabs.cloudwatch-mcp-server` (MCP over stdio)              |
+| Log monitoring      | CloudWatch Logs Subscription Filter → Lambda watcher          |
+| Remediation         | Agent writes directly to SSM Parameter Store (boto3)          |
 | Infrastructure      | Terraform (AWS provider ≥ 6.17)                               |
 | Application         | Python 3.12+ packaged with `uv`                               |
 
@@ -45,16 +45,16 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
          ┌──────────────────────┐                   │  └────┬───────────┘  │ │
          │ log-watcher Lambda   │                   │       │ (boto3)      │ │
          │ - Filters events     │                   └───────┼──────────────┘ │
-         │ - Invokes AgentCore  │  ─────────────────────►  │               │
-         │   runtime            │                         │               │
-         └──────────────────────┘                         │               │
-                                                          ▼               │
-                                    ┌────────────────────────────────────┐│
-                                    │ SSM Parameter Store                ││
-                                    │ /sre-agent/actions/latest          ││
-                                    │ {error_type, action, severity}     ││
-                                    └────────────────────────────────────┘│
-                                    AgentCore Memory (cross-session)      │
+         │ - Invokes AgentCore  │  ───────────────────────► │                │
+         │   runtime            │                           │                │
+         └──────────────────────┘                           │                │
+                                                            ▼                │
+                                    ┌────────────────────────────────────┐   │
+                                    │ SSM Parameter Store                │   │
+                                    │ /sre-agent/actions/latest          │   │
+                                    │ {error_type, action, severity}     │   │
+                                    └────────────────────────────────────┘   │
+                                        AgentCore Memory (cross-session)     │
                                     └────────────────────────────────────┘
 ```
 
