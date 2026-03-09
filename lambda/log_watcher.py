@@ -1,7 +1,8 @@
 """log_watcher.py – Lambda triggered by CloudWatch Logs subscription filter.
 
-Filters log events for ERROR or CRITICAL level messages and invokes the
-AgentCore runtime to analyze and remediate.
+Filters log events for ERROR or CRITICAL level messages, writes a summary
+to SSM Parameter Store, and invokes the AgentCore runtime endpoint so the
+SRE agent can investigate and trigger remediation automatically.
 
 Expected event payload (from CloudWatch Logs subscription filter):
 {
@@ -27,6 +28,8 @@ import gzip
 import json
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
@@ -38,12 +41,15 @@ logger.setLevel(logging.INFO)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler triggered by CloudWatch Logs subscription filter.
 
+    Filters for ERROR/CRITICAL logs and writes a summary to SSM Parameter Store.
+    The SRE agent monitors this parameter and investigates when it changes.
+
     Args:
         event: CloudWatch Logs event containing log data
         context: Lambda context
 
     Returns:
-        Response dict with invocation status
+        Response dict with processing status
     """
     try:
         # Decode and decompress the CloudWatch Logs payload
@@ -53,6 +59,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         log_group = log_data.get("logGroup", "unknown")
         log_events = log_data.get("logEvents", [])
+        region = os.environ.get("AWS_REGION", "us-west-2")
 
         logger.info(f"Processing {len(log_events)} events from {log_group}")
 
@@ -79,32 +86,90 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 error_events.append(log_event)
                 error_types.add(error_type)
 
-        # If no errors found, skip invocation (save cost)
+        # If no errors found, skip processing
         if not error_events:
-            logger.info("No ERROR or CRITICAL logs found – skipping invocation")
+            logger.info("No ERROR or CRITICAL logs found")
             return {"statusCode": 200, "body": "No errors detected"}
 
         logger.info(
             f"Found {len(error_events)} error events with types: {', '.join(error_types)}"
         )
 
-        # Invoke AgentCore runtime with error summary
-        prompt = (
-            f"Se detectaron {len(error_events)} errores en el log group {log_group}.\n"
-            f"Tipos detectados: {', '.join(sorted(error_types))}.\n"
-            f"Investiga el log group completo en los últimos 24 horas y toma acción de remediación "
-            f"escribiendo a SSM Parameter Store en /sre-agent/actions/latest."
+        # Write error summary to SSM Parameter Store for audit trail
+        timestamp = datetime.now(timezone.utc).isoformat()
+        summary_data = {
+            "timestamp": timestamp,
+            "error_count": len(error_events),
+            "error_types": sorted(list(error_types)),
+            "source_log_group": log_group,
+            "message": (
+                f"Detected {len(error_events)} errors in {log_group}. "
+                f"Error types: {', '.join(sorted(error_types))}. "
+                f"Agent should investigate and take remediation action."
+            ),
+        }
+
+        ssm = boto3.client("ssm", region_name=region)
+        ssm.put_parameter(
+            Name="/sre-agent/error-detected",
+            Value=json.dumps(summary_data),
+            Type="String",
+            Overwrite=True,
+            Description=f"Error detected in {log_group} at {timestamp}",
         )
 
-        response = invoke_agentcore(prompt, log_group, context)
+        logger.info("Wrote error summary to SSM Parameter Store")
+
+        # Invoke the AgentCore runtime endpoint to analyse and remediate
+        runtime_arn = os.environ.get("AGENTCORE_RUNTIME_ARN", "")
+        if not runtime_arn:
+            logger.warning("AGENTCORE_RUNTIME_ARN not set – skipping agent invocation")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "message": f"Error summary written for {log_group} (agent not invoked)",
+                    "error_count": len(error_events),
+                }),
+            }
+
+        prompt = (
+            f"Errors detected in {log_group} in {region}. "
+            f"Error types: {', '.join(sorted(error_types))}. "
+            f"Analyse the log group for the last 1 hour and trigger remediation."
+        )
+        session_id = str(uuid.uuid4())
+        payload = json.dumps({"inputText": prompt, "sessionId": session_id})
+
+        agentcore = boto3.client("bedrock-agentcore", region_name=region)
+        agent_response = agentcore.invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            runtimeSessionId=session_id,
+            payload=payload.encode("utf-8"),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        # Read the response body
+        raw_body = (
+            agent_response.get("response")
+            or agent_response.get("body")
+            or agent_response.get("responseStream")
+        )
+        response_text = ""
+        if raw_body and hasattr(raw_body, "read"):
+            response_text = raw_body.read().decode("utf-8", errors="replace")
+        elif raw_body:
+            response_text = str(raw_body)
+
+        logger.info(f"Agent response (truncated): {response_text[:500]}")
 
         return {
             "statusCode": 200,
             "body": json.dumps({
-                "message": f"Invoked AgentCore for {log_group}",
+                "message": f"Agent invoked for {log_group}",
                 "error_count": len(error_events),
                 "error_types": list(error_types),
-                "invocation_response": response,
+                "session_id": session_id,
             }),
         }
 
@@ -114,55 +179,3 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "statusCode": 500,
             "body": json.dumps({"error": str(e)}),
         }
-
-
-def invoke_agentcore(prompt: str, log_group: str, context: Any) -> dict[str, Any]:
-    """Invoke the AgentCore runtime via bedrock-agentcore-runtime API.
-
-    Args:
-        prompt: The analysis prompt for the agent
-        log_group: The log group being analyzed
-        context: Lambda context (for session ID)
-
-    Returns:
-        Response from the AgentCore invocation
-    """
-    runtime_arn = os.environ.get("AGENTCORE_RUNTIME_ARN")
-    region = os.environ.get("AWS_REGION", "us-west-2")
-
-    if not runtime_arn:
-        raise ValueError("AGENTCORE_RUNTIME_ARN environment variable not set")
-
-    # Extract runtime ID from ARN (format: arn:aws:bedrock-agentcore:region:account:agent-runtime/id)
-    runtime_id = runtime_arn.split("/")[-1]
-
-    logger.info(f"Invoking AgentCore runtime: {runtime_id}")
-
-    # Use bedrock-agentcore-runtime to invoke
-    client = boto3.client("bedrock-agentcore-runtime", region_name=region)
-
-    try:
-        response = client.invoke_agent_runtime(
-            agentRuntimeId=runtime_id,
-            sessionId=f"log-watcher-{context.aws_request_id}",
-            inputText=prompt,
-        )
-
-        # Collect response text from stream
-        response_text = ""
-        if "body" in response:
-            for chunk in response["body"]:
-                if "chunk" in chunk:
-                    response_text += chunk["chunk"].get("bytes", "").decode("utf-8")
-
-        logger.info(f"AgentCore invocation completed. Response length: {len(response_text)}")
-
-        return {
-            "status": "success",
-            "runtime_id": runtime_id,
-            "response_preview": response_text[:500],  # First 500 chars
-        }
-
-    except Exception as e:
-        logger.error(f"AgentCore invocation failed: {e}")
-        raise

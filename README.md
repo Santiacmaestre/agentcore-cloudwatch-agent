@@ -27,9 +27,9 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  Developer / Infrastructure                                                  │
 │  terraform apply  ──►  ECR (arm64 image)  ──►  AgentCore Runtime             │
-└──────────────────────────────────────────────────────────────────────────────┘
-                                                          ▲
-                                                          │
+│                                                        ▲ (manual invocation)  │
+└────────────────────────────────────────────────────────┼─────────────────────┘
+                                                         │
                     ┌─────────────────────────────────────┴──────────────────┐
                     │                                                        │
          ┌──────────▼──────────┐                    ┌──────────────────────┐ │
@@ -44,32 +44,33 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
                     ▼                               │  │   store tool   │  │ │
          ┌──────────────────────┐                   │  └────┬───────────┘  │ │
          │ log-watcher Lambda   │                   │       │ (boto3)      │ │
-         │ - Filters events     │                   └───────┼──────────────┘ │
-         │ - Invokes AgentCore  │  ───────────────────────► │                │
-         │   runtime            │                           │                │
-         └──────────────────────┘                           │                │
-                                                            ▼                │
-                                    ┌────────────────────────────────────┐   │
-                                    │ SSM Parameter Store                │   │
-                                    │ /sre-agent/actions/latest          │   │
-                                    │ {error_type, action, severity}     │   │
-                                    └────────────────────────────────────┘   │
-                                        AgentCore Memory (cross-session)     │
-                                    └────────────────────────────────────┘
+         │ - Filters ERROR logs │                   └───────┼──────────────┘ │
+         │ - Writes summary     │──┐                        │                │
+         │   to SSM             │  │                        │                │
+         └──────────────────────┘  │                        ▼                │
+                                   │   ┌────────────────────────────────────┐│
+                                   │   │ SSM Parameter Store                ││
+                                   │   │ /sre-agent/error-detected          ││
+                                   └──►│ /sre-agent/actions/latest          ││
+                                       │ {error_type, action, severity}     ││
+                                       └────────────────────────────────────┘│
+                                           AgentCore Memory (cross-session)  │
+                                       └────────────────────────────────────┘
 ```
 
 
-## Demo Flow (Automated)
+## Demo Flow
 
 1. **Inject demo logs** – A script pushes ~150 log events (80% normal, 20% errors) to CloudWatch Logs
 2. **Subscription filter triggers** – CloudWatch Logs subscription filter detects ERROR/CRITICAL level events
-3. **log-watcher Lambda invokes** – Lambda automatically triggers the AgentCore runtime with error summary
-4. **Agent analyzes** – The SRE agent queries CloudWatch Logs, identifies patterns, counts, and severity
-5. **Write remediation action** – Agent calls `write_to_parameter_store` (boto3 SSM PutParameter directly)
-6. **Parameter Store updated** – Error details and recommended action written to `/sre-agent/actions/latest`
-7. **Verification** – Check SSM parameter to see the findings
+3. **log-watcher Lambda filters** – Lambda extracts error summary and writes to SSM (`/sre-agent/error-detected`)
+4. **Agent invocation** – User manually invokes the agent via `run_demo.sh` to analyze logs (can be automated via EventBridge/SNS)
+5. **Agent analyzes** – The SRE agent queries CloudWatch Logs, identifies patterns, counts, and severity
+6. **Write remediation action** – Agent calls `write_to_parameter_store` (boto3 SSM PutParameter directly)
+7. **Parameter Store updated** – Error details and recommended action written to `/sre-agent/actions/latest`
+8. **Verification** – Check SSM parameter to see the findings
 
-**The entire flow is automatic** — from log injection to SSM update, no manual agent invocation needed.
+**Semi-automated flow:** Lambda detects and summarizes errors; user/automation triggers agent analysis.
 
 
 ## Repository Layout
@@ -148,22 +149,38 @@ terraform apply -var region=us-west-2
 
 See [terraform/README.md](terraform/README.md) for all variables and outputs.
 
-### 2. Run the end-to-end demo
+### 2. Run the demo
 
+**Step A: Inject logs and trigger Lambda filter**
 ```bash
 ./scripts/run_demo.sh us-west-2
 ```
 
 This script:
-1. **Injects demo logs** – ~150 mixed events (80% normal, 20% errors)
-2. **Waits for Lambda trigger** – subscription filter detects ERROR/CRITICAL logs
-3. **AgentCore invokes** – log-watcher Lambda calls the runtime
-4. **Agent analyzes** – CloudWatch Logs Insights queries, error detection
-5. **Writes remediation** – agent calls `write_to_parameter_store` → SSM updated
-6. **Polls for result** – waits up to 60s for parameter update
-7. **Displays findings** – shows the agent's analysis and recommended action
+1. Injects ~150 mixed log events (80% normal, 20% errors) to `/demo/app-logs`
+2. CloudWatch subscription filter detects ERROR/CRITICAL events
+3. log-watcher Lambda writes error summary to SSM (`/sre-agent/error-detected`)
+4. Shows the SSM error alert
 
-The **entire flow is automated** — no manual agent invocation needed.
+**Step B: Manually invoke the agent** (can be automated via EventBridge/SNS)
+
+Once the log-watcher Lambda has written the error summary, invoke the agent:
+
+```bash
+cd app/
+# Get the runtime ARN from Terraform
+RUNTIME_ARN=$(cd ../terraform && terraform output -raw agent_runtime_arn)
+
+# Invoke the agent with a prompt to analyze the log group
+python invoke_agent.py \
+  --runtime-arn "$RUNTIME_ARN" \
+  --prompt "Analyse the log group /demo/app-logs for the last 24 hours. Look for errors and trigger remediation."
+```
+
+The agent will:
+- Query CloudWatch Logs Insights
+- Identify error patterns and severity
+- Call `write_to_parameter_store` to record findings in `/sre-agent/actions/latest`
 
 ### 3. Inspect results
 
@@ -206,8 +223,9 @@ See [app/README.md](app/README.md) for more interactive commands and cross-accou
 ## Key Design Decisions
 
 - **Anthropic Claude Sonnet 4.6** – top-tier reasoning model via Bedrock cross-region inference, no fallback to other models.
-- **Automated error detection** – CloudWatch Logs subscription filter detects ERROR/CRITICAL events automatically; Lambda watcher invokes the agent without manual trigger.
+- **Filtered error detection** – CloudWatch Logs subscription filter detects ERROR/CRITICAL events automatically; Lambda watcher writes summaries to SSM for downstream consumption.
 - **Direct SSM writes** – agent calls `write_to_parameter_store` (boto3 SSM PutParameter) directly, removing Lambda invocation intermediary. Faster, simpler, fewer failure points.
+- **Manual agent invocation** – user or automation (via EventBridge/SNS) invokes the agent after log-watcher Lambda detects errors. Flexible, testable, doesn't require private endpoint access.
 - **Strands Agents SDK** – the entire agentic loop (tool discovery, execution, retry, conversation history) is delegated to Strands, replacing manual Bedrock Converse API calls.
 - **Dynamic tool discovery** – the Strands `MCPClient` discovers all tools via the MCP `tools/list` protocol, so CloudWatch MCP server updates are reflected automatically.
 - **Cross-account via STS** – assumed-role credentials are injected as environment variables into the MCP subprocess, keeping the agent in the trusted account.

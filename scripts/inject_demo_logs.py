@@ -124,7 +124,7 @@ ERROR_TEMPLATES = [
 
 # Normal operational log templates
 NORMAL_TEMPLATES = [
-    {"level": "INFO", "service": "order-service", "message": "Order {order_id} placed successfully – total=${ amount:.2f}"},
+    {"level": "INFO", "service": "order-service", "message": "Order {order_id} placed successfully – total={amount:.2f}"},
     {"level": "INFO", "service": "user-service", "message": "User {user_id} logged in from {ip}"},
     {"level": "INFO", "service": "payment-service", "message": "Payment {payment_id} processed – status=APPROVED"},
     {"level": "INFO", "service": "inventory-service", "message": "Stock updated for SKU {sku}: qty={qty}"},

@@ -55,3 +55,8 @@ output "remediation_parameter_name" {
   value = aws_ssm_parameter.remediation_latest.name
 }
 
+# Endpoint ARN for programmatic invocation of the agent runtime
+output "agent_runtime_endpoint_arn" {
+  value = aws_bedrockagentcore_agent_runtime_endpoint.this.agent_runtime_endpoint_arn
+}
+

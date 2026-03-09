@@ -35,7 +35,7 @@ from cw_sre_agent.config import load_config
 from cw_sre_agent.export import BundleBuilder
 from cw_sre_agent.logging import AgentLogger, LogContext
 from cw_sre_agent.memory import AgentMemory
-from cw_sre_agent.remediation import trigger_remediation
+from cw_sre_agent.remediation import write_to_parameter_store
 
 # ── Bootstrap config once at import time ─────────────────────────────────────
 
@@ -161,7 +161,7 @@ def _get_or_create_session(session_id: str) -> dict[str, Any]:
 
         agent = Agent(
             model=model,
-            tools=[mcp_client, trigger_remediation],
+            tools=[mcp_client, write_to_parameter_store],
             system_prompt=build_system_prompt(config),
         )
 
@@ -211,7 +211,7 @@ async def _ensure_cross_account(session: dict[str, Any]) -> None:
         )
         session["agent"] = Agent(
             model=model,
-            tools=[new_mcp, trigger_remediation],
+            tools=[new_mcp, write_to_parameter_store],
             system_prompt=build_system_prompt(config),
             messages=agent.messages,
         )

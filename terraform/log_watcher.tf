@@ -35,7 +35,7 @@ resource "aws_iam_role" "log_watcher_lambda" {
   assume_role_policy = data.aws_iam_policy_document.log_watcher_assume_role.json
 }
 
-# Permissions for CloudWatch Logs (execution logs) + AgentCore invocation
+# Permissions for CloudWatch Logs (execution logs) + SSM writes
 data "aws_iam_policy_document" "log_watcher_lambda_policy" {
   statement {
     sid = "CloudWatchLogs"
@@ -48,9 +48,21 @@ data "aws_iam_policy_document" "log_watcher_lambda_policy" {
   }
 
   statement {
-    sid       = "InvokeAgentCore"
+    sid       = "SSMParameterWrite"
+    actions   = ["ssm:PutParameter"]
+    resources = ["arn:aws:ssm:${var.region}:*:parameter/sre-agent/*"]
+  }
+
+  # Allows the Lambda to invoke the AgentCore runtime endpoint
+  statement {
+    sid       = "AgentCoreInvoke"
     actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
-    resources = [aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn]
+    resources = [
+      "${aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn}",
+      "${aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn}/*",
+      "${aws_bedrockagentcore_agent_runtime_endpoint.this.agent_runtime_endpoint_arn}",
+      "${aws_bedrockagentcore_agent_runtime_endpoint.this.agent_runtime_endpoint_arn}/*",
+    ]
   }
 }
 
@@ -66,15 +78,15 @@ resource "aws_lambda_function" "log_watcher" {
   role             = aws_iam_role.log_watcher_lambda.arn
   handler          = "log_watcher.handler"
   runtime          = "python3.12"
-  timeout          = 120
-  memory_size      = 128
+  timeout          = 300
+  memory_size      = 256
   filename         = data.archive_file.log_watcher_lambda.output_path
   source_code_hash = data.archive_file.log_watcher_lambda.output_base64sha256
 
   environment {
     variables = {
-      AGENTCORE_RUNTIME_ARN = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
-      AWS_REGION            = var.region
+      AGENTCORE_RUNTIME_ARN  = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+      AGENTCORE_ENDPOINT_ARN = aws_bedrockagentcore_agent_runtime_endpoint.this.agent_runtime_endpoint_arn
     }
   }
 

@@ -44,3 +44,12 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
     aws_cloudwatch_log_group.agent_execution,
   ]
 }
+
+# Exposes the runtime as an invocable endpoint for the log_watcher Lambda
+resource "aws_bedrockagentcore_agent_runtime_endpoint" "this" {
+  name             = "${replace(var.agent_name, "-", "_")}_endpoint"
+  agent_runtime_id = aws_bedrockagentcore_agent_runtime.this.agent_runtime_id
+  description      = "Endpoint for Lambda-driven invocation of the SRE agent"
+
+  depends_on = [aws_bedrockagentcore_agent_runtime.this]
+}
