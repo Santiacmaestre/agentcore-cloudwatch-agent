@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import traceback
 import uuid
 from typing import Any, Optional
@@ -35,7 +36,7 @@ from cw_sre_agent.config import load_config
 from cw_sre_agent.export import BundleBuilder
 from cw_sre_agent.logging import AgentLogger, LogContext
 from cw_sre_agent.memory import AgentMemory
-from cw_sre_agent.remediation import write_to_parameter_store
+from cw_sre_agent.remediation import log_to_remediation
 
 # ── Bootstrap config once at import time ─────────────────────────────────────
 
@@ -161,7 +162,7 @@ def _get_or_create_session(session_id: str) -> dict[str, Any]:
 
         agent = Agent(
             model=model,
-            tools=[mcp_client, write_to_parameter_store],
+            tools=[mcp_client],
             system_prompt=build_system_prompt(config),
         )
 
@@ -211,7 +212,7 @@ async def _ensure_cross_account(session: dict[str, Any]) -> None:
         )
         session["agent"] = Agent(
             model=model,
-            tools=[new_mcp, write_to_parameter_store],
+            tools=[new_mcp],
             system_prompt=build_system_prompt(config),
             messages=agent.messages,
         )
@@ -261,6 +262,25 @@ async def _run_agent_turn(session: dict[str, Any], user_text: str) -> str:
 
     logger.log_final_answer(final_answer)
     bundle.add_turn("assistant", final_answer, correlation_id=log_ctx.correlation_id)
+
+    # Write investigation events to the remediation log group
+    now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    log_to_remediation({
+        "level": "INFO",
+        "event": "user_prompt",
+        "session_id": log_ctx.session_id,
+        "correlation_id": log_ctx.correlation_id,
+        "ts": now_str,
+        "user_prompt": user_text,
+    })
+    log_to_remediation({
+        "level": "INFO",
+        "event": "final_answer",
+        "session_id": log_ctx.session_id,
+        "correlation_id": log_ctx.correlation_id,
+        "ts": now_str,
+        "final_answer": final_answer,
+    })
     session["messages_raw"].append({"role": "assistant", "text": final_answer})
 
     # Persist to AgentCore Memory (best-effort)

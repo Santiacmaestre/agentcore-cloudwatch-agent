@@ -1,7 +1,7 @@
 # agentcore-cloudwatch-agent
 
 Proof-of-concept SRE incident-troubleshooting agent built on **Amazon Bedrock AgentCore**.
-Automatically monitors CloudWatch Logs, detects errors, invokes the agent via a Lambda subscription filter watcher, and writes remediation actions directly to AWS Systems Manager Parameter Store.
+Automatically monitors CloudWatch Logs, detects errors, invokes the agent via a Lambda subscription filter watcher, and logs remediation findings to a dedicated CloudWatch Log Group.
 
 Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents SDK**, and the CloudWatch MCP server.
 
@@ -16,7 +16,7 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
 | Persistent memory   | AgentCore Memory with session-scoped summarization            |
 | Observability tools | `awslabs.cloudwatch-mcp-server` (MCP over stdio)              |
 | Log monitoring      | CloudWatch Logs Subscription Filter → Lambda watcher          |
-| Remediation         | Agent writes directly to SSM Parameter Store (boto3)          |
+| Remediation         | Agent findings logged to CloudWatch Log Group                 |
 | Infrastructure      | Terraform (AWS provider ≥ 6.17)                               |
 | Application         | Python 3.12+ packaged with `uv`                               |
 
@@ -27,7 +27,7 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  Developer / Infrastructure                                                  │
 │  terraform apply  ──►  ECR (arm64 image)  ──►  AgentCore Runtime             │
-│                                                        ▲ (manual invocation)  │
+│                                                        ▲ (manual invocation) │
 └────────────────────────────────────────────────────────┼─────────────────────┘
                                                          │
                     ┌─────────────────────────────────────┴──────────────────┐
@@ -39,23 +39,21 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
          └──────────┬──────────┘                    │  │ + Strands SDK  │  │ │
                     │                               │  │ + CloudWatch   │  │ │
                     │ Subscription                  │  │   MCP Server   │  │ │
-                    │ Filter (ERROR/CRITICAL)       │  │ + write_to_    │  │ │
-                    │                               │  │   parameter_   │  │ │
-                    ▼                               │  │   store tool   │  │ │
-         ┌──────────────────────┐                   │  └────┬───────────┘  │ │
-         │ log-watcher Lambda   │                   │       │ (boto3)      │ │
-         │ - Filters ERROR logs │                   └───────┼──────────────┘ │
-         │ - Writes summary     │──┐                        │                │
-         │   to SSM             │  │                        │                │
-         └──────────────────────┘  │                        ▼                │
-                                   │   ┌────────────────────────────────────┐│
-                                   │   │ SSM Parameter Store                ││
-                                   │   │ /sre-agent/error-detected          ││
-                                   └──►│ /sre-agent/actions/latest          ││
-                                       │ {error_type, action, severity}     ││
-                                       └────────────────────────────────────┘│
-                                           AgentCore Memory (cross-session)  │
-                                       └────────────────────────────────────┘
+                    │ Filter (ERROR/CRITICAL)       │  └────┬───────────┘  │ │
+                    │                               │       │              │ │
+                    ▼                               └───────┼──────────────┘ │
+         ┌──────────────────────┐                           │                │
+         │ log-watcher Lambda   │                           ▼                │
+         │ - Filters ERROR logs │       ┌────────────────────────────────────┤
+         │ - Writes summary     │──┐    │ CloudWatch Log Group               │
+         │   to SSM             │  │    │ /sre-agent/remediations            │
+         └──────────────────────┘  │    │ {user_prompt, final_answer}        │
+                                   │    └────────────────────────────────────┤
+                                   │    │ SSM Parameter Store                │
+                                   └──► │ /sre-agent/error-detected          │
+                                        └────────────────────────────────────┤
+                                            AgentCore Memory (cross-session) │
+                                        └────────────────────────────────────┘
 ```
 
 
@@ -66,9 +64,8 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
 3. **log-watcher Lambda filters** – Lambda extracts error summary and writes to SSM (`/sre-agent/error-detected`)
 4. **Agent invocation** – User manually invokes the agent via `run_demo.sh` to analyze logs (can be automated via EventBridge/SNS)
 5. **Agent analyzes** – The SRE agent queries CloudWatch Logs, identifies patterns, counts, and severity
-6. **Write remediation action** – Agent calls `write_to_parameter_store` (boto3 SSM PutParameter directly)
-7. **Parameter Store updated** – Error details and recommended action written to `/sre-agent/actions/latest`
-8. **Verification** – Check SSM parameter to see the findings
+6. **Findings logged** – The server automatically logs the user prompt and the agent's full analysis to `/sre-agent/remediations`
+7. **Verification** – Query the remediation log group to see findings
 
 **Semi-automated flow:** Lambda detects and summarizes errors; user/automation triggers agent analysis.
 
@@ -79,7 +76,7 @@ Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents S
 agentcore-cloudwatch-agent/
 ├── app/                      # Python agent application
 │   ├── src/cw_sre_agent/     # Agent source code
-│   │   ├── remediation.py    # Strands tool: write_to_parameter_store (boto3 SSM)
+│   │   ├── remediation.py    # CloudWatch sink for remediation log group
 │   │   └── ...               # agent, config, server, cli, etc.
 │   ├── scripts/              # build_and_push.sh, run_local.sh
 │   ├── Dockerfile            # arm64 container image
@@ -94,7 +91,7 @@ agentcore-cloudwatch-agent/
 └── terraform/                # Infrastructure as code
     ├── agentcore.tf          # AgentCore runtime resource
     ├── log_watcher.tf        # log-watcher Lambda + IAM role
-    ├── demo.tf               # Demo log group + subscription filter + SSM parameter
+    ├── demo.tf               # Demo log group + subscription filter + remediation log group
     ├── memory.tf             # AgentCore Memory + summarization strategy
     ├── iam.tf                # AgentCore execution role & inline policy
     ├── ecr.tf                # ECR repository + lifecycle policy
@@ -144,7 +141,7 @@ terraform apply -var region=us-west-2
 - CloudWatch Logs demo group (`/demo/app-logs`)
 - **log-watcher Lambda** (triggered by subscription filter)
 - Subscription filter on demo logs (ERROR/CRITICAL pattern)
-- SSM Parameter Store (`/sre-agent/actions/latest`)
+- Remediation log group (`/sre-agent/remediations`)
 - IAM roles for AgentCore runtime and Lambda
 
 See [terraform/README.md](terraform/README.md) for all variables and outputs.
@@ -180,29 +177,31 @@ python invoke_agent.py \
 The agent will:
 - Query CloudWatch Logs Insights
 - Identify error patterns and severity
-- Call `write_to_parameter_store` to record findings in `/sre-agent/actions/latest`
+- Its full analysis is automatically logged to `/sre-agent/remediations`
 
 ### 3. Inspect results
 
 ```bash
-# View the remediation action written by the agent
-aws ssm get-parameter \
-  --name /sre-agent/actions/latest \
+# View the latest remediation event logged by the agent
+aws logs get-log-events \
+  --log-group-name /sre-agent/remediations \
+  --log-stream-name remediation-actions \
   --region us-west-2 \
-  --query 'Parameter.Value' \
+  --limit 5 \
+  --start-from-head false \
+  --query 'events[].message' \
   --output text | python3 -m json.tool
 ```
 
 Expected output:
 ```json
 {
-  "timestamp": "2026-03-08T14:30:00Z",
-  "error_type": "DatabaseConnectionError",
-  "error_category": "database",
-  "source_log_group": "/demo/app-logs",
-  "summary": "Detected 15 DatabaseConnectionError events in /demo/app-logs over 24 hours; connection pool near saturation",
-  "action": "scale_up_connections",
-  "severity": "HIGH"
+  "level": "INFO",
+  "event": "final_answer",
+  "session_id": "d261d5b6-bf69-450b-956a-c22be2ed3fbb",
+  "correlation_id": "046262e7-59c9-4a58-bb40-13e71e9426c7",
+  "ts": "2026-03-08T14:30:00Z",
+  "final_answer": "## Incident Analysis — /demo/app-logs\n\n| Error Type | Category | Severity | Action |\n|---|---|---|---|\n| DatabaseConnectionError | database | CRITICAL | scale_up_connections |\n| BadGateway | http | HIGH | restart_service |\n..."
 }
 ```
 
@@ -224,7 +223,7 @@ See [app/README.md](app/README.md) for more interactive commands and cross-accou
 
 - **Anthropic Claude Sonnet 4.6** – top-tier reasoning model via Bedrock cross-region inference, no fallback to other models.
 - **Filtered error detection** – CloudWatch Logs subscription filter detects ERROR/CRITICAL events automatically; Lambda watcher writes summaries to SSM for downstream consumption.
-- **Direct SSM writes** – agent calls `write_to_parameter_store` (boto3 SSM PutParameter) directly, removing Lambda invocation intermediary. Faster, simpler, fewer failure points.
+- **CloudWatch remediation log** – agent findings are automatically logged to `/sre-agent/remediations` as structured JSON events, preserving full investigation history instead of overwriting a single SSM parameter.
 - **Manual agent invocation** – user or automation (via EventBridge/SNS) invokes the agent after log-watcher Lambda detects errors. Flexible, testable, doesn't require private endpoint access.
 - **Strands Agents SDK** – the entire agentic loop (tool discovery, execution, retry, conversation history) is delegated to Strands, replacing manual Bedrock Converse API calls.
 - **Dynamic tool discovery** – the Strands `MCPClient` discovers all tools via the MCP `tools/list` protocol, so CloudWatch MCP server updates are reflected automatically.

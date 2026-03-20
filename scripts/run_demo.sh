@@ -15,7 +15,8 @@ set -euo pipefail
 
 REGION="${1:-us-west-2}"
 LOG_GROUP="/demo/app-logs"
-SSM_PARAM="/sre-agent/actions/latest"
+REMEDIATION_LOG_GROUP="/sre-agent/remediations"
+REMEDIATION_STREAM="remediation-actions"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -23,9 +24,9 @@ echo "════════════════════════�
 echo "  SRE Agent Demo – CloudWatch Error Detection & Remediation"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "  Region:     $REGION"
-echo "  Log Group:  $LOG_GROUP"
-echo "  SSM Param:  $SSM_PARAM"
+echo "  Region:              $REGION"
+echo "  Log Group:           $LOG_GROUP"
+echo "  Remediation Logs:    $REMEDIATION_LOG_GROUP"
 echo ""
 
 # ── Step 1: Inject demo logs ──────────────────────────────────────
@@ -39,14 +40,16 @@ python3 "$SCRIPT_DIR/inject_demo_logs.py" \
   --hours-back 6
 echo ""
 
-# ── Step 2: Check SSM parameter before ────────────────────────────
+# ── Step 2: Check remediation log group before ────────────────────
 
-echo "▸ Step 2: Current SSM parameter value (before agent):"
-aws ssm get-parameter \
-  --name "$SSM_PARAM" \
+echo "▸ Step 2: Current remediation log events (before agent):"
+aws logs get-log-events \
+  --log-group-name "$REMEDIATION_LOG_GROUP" \
+  --log-stream-name "$REMEDIATION_STREAM" \
   --region "$REGION" \
-  --query 'Parameter.Value' \
-  --output text 2>/dev/null | python3 -m json.tool || echo "  (parameter not found – will be created)"
+  --limit 1 \
+  --query 'events[].message' \
+  --output text 2>/dev/null | python3 -m json.tool || echo "  (no events yet – log stream will be created by the agent)"
 echo ""
 
 # ── Step 3: Wait for log watcher Lambda to filter events ────────────
@@ -92,15 +95,16 @@ echo ""
 # ── Step 4: Wait for agent remediation ────────────────────────────
 
 echo "▸ Step 4: Waiting for agent to analyse logs and write remediation..."
-echo "  (Lambda invokes AgentCore runtime endpoint → agent writes to $SSM_PARAM)"
+echo "  (Lambda invokes AgentCore runtime endpoint → agent logs to $REMEDIATION_LOG_GROUP)"
 echo ""
 
-# Capture the current value so we can detect when it changes
-BEFORE_VALUE=$(aws ssm get-parameter \
-  --name "$SSM_PARAM" \
+# Capture the current event count so we can detect new events
+BEFORE_COUNT=$(aws logs get-log-events \
+  --log-group-name "$REMEDIATION_LOG_GROUP" \
+  --log-stream-name "$REMEDIATION_STREAM" \
   --region "$REGION" \
-  --query 'Parameter.LastModifiedDate' \
-  --output text 2>/dev/null || echo "")
+  --query 'length(events)' \
+  --output text 2>/dev/null || echo "0")
 
 WAIT_TIME=0
 MAX_WAIT=300
@@ -108,21 +112,25 @@ POLL_INTERVAL=10
 REMEDIATION=""
 
 while [ $WAIT_TIME -lt $MAX_WAIT ]; do
-  CURRENT_VALUE=$(aws ssm get-parameter \
-    --name "$SSM_PARAM" \
+  CURRENT_COUNT=$(aws logs get-log-events \
+    --log-group-name "$REMEDIATION_LOG_GROUP" \
+    --log-stream-name "$REMEDIATION_STREAM" \
     --region "$REGION" \
-    --query 'Parameter.LastModifiedDate' \
-    --output text 2>/dev/null || echo "")
+    --query 'length(events)' \
+    --output text 2>/dev/null || echo "0")
 
-  if [ -n "$CURRENT_VALUE" ] && [ "$CURRENT_VALUE" != "$BEFORE_VALUE" ]; then
-    REMEDIATION=$(aws ssm get-parameter \
-      --name "$SSM_PARAM" \
+  if [ "$CURRENT_COUNT" != "$BEFORE_COUNT" ] && [ "$CURRENT_COUNT" != "0" ]; then
+    REMEDIATION=$(aws logs get-log-events \
+      --log-group-name "$REMEDIATION_LOG_GROUP" \
+      --log-stream-name "$REMEDIATION_STREAM" \
       --region "$REGION" \
-      --query 'Parameter.Value' \
+      --limit 1 \
+      --start-from-head false \
+      --query 'events[-1].message' \
       --output text 2>/dev/null || echo "")
     echo "  ✓ Agent wrote remediation action!"
     echo ""
-    echo "  Remediation:"
+    echo "  Latest remediation:"
     echo "$REMEDIATION" | python3 -m json.tool 2>/dev/null || echo "$REMEDIATION"
     echo ""
     break

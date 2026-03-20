@@ -3,14 +3,12 @@
 #
 # Description:
 #   Resources specific to the demo simulation: a CloudWatch Log Group
-#   for injected demo logs and an SSM parameter that the remediation
-#   Lambda writes to. Also provisions the log group variable for the
-#   inject_demo_logs.py script.
+#   for injected demo logs and a remediation log group where the agent
+#   appends actions as log events.
 #
 # Notes:
 #   - The demo log group is separate from the agent execution log group.
-#   - The SSM parameter is created with a placeholder value; the Lambda
-#     overwrites it when triggered by the agent.
+#   - The remediation log group preserves full history of all actions.
 #######################################################################
 
 # Log group where inject_demo_logs.py writes simulated application logs
@@ -38,14 +36,8 @@ resource "aws_lambda_permission" "cloudwatch_invoke_log_watcher" {
   source_arn    = "${aws_cloudwatch_log_group.demo_app_logs.arn}:*"
 }
 
-# Seed SSM parameter – the agent overwrites this when writing remediation actions
-resource "aws_ssm_parameter" "remediation_latest" {
-  name        = "/sre-agent/actions/latest"
-  type        = "String"
-  value       = "{\"status\": \"no_issues_detected\"}"
-  description = "Latest remediation action written by the SRE agent"
-
-  lifecycle {
-    ignore_changes = [value, description]
-  }
+# Log group where the agent appends remediation actions as log events
+resource "aws_cloudwatch_log_group" "remediation" {
+  name              = "/sre-agent/remediations"
+  retention_in_days = 7
 }
