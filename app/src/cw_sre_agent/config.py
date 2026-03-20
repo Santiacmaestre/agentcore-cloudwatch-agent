@@ -24,25 +24,8 @@ from typing import Optional
 
 # ── Model defaults ──────────────────────────────────────────────────────────
 
-# Amazon Nova Premier is the top-tier model as of 2026.
-# Falls back to Nova Pro when Premier is not available.
-DEFAULT_MODEL_ID = "amazon.nova-premier-v1:0"
-FALLBACK_MODEL_ID = "amazon.nova-pro-v1:0"
-
-# Known Nova-Premier regions (update when GA expands)
-NOVA_PREMIER_REGIONS = {
-    "us-east-1",
-    "us-west-2",
-    "eu-west-1",
-    "ap-northeast-1",
-}
-
-
-def _resolve_default_model(region: str) -> str:
-    """Return the best available model for the given runtime region."""
-    if region in NOVA_PREMIER_REGIONS:
-        return DEFAULT_MODEL_ID
-    return FALLBACK_MODEL_ID
+# Anthropic Claude Sonnet 4.6 via Bedrock cross-region inference.
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
 
 
 # ── Config dataclass ─────────────────────────────────────────────────────────
@@ -117,9 +100,9 @@ def load_config(model_id_override: Optional[str] = None) -> Config:
         print("\n".join(errors), file=sys.stderr)
         sys.exit(1)
 
-    # Resolve model: env var → region default
+    # Resolve model: env var → default (Sonnet 4.6)
     if not model_id_raw:
-        model_id_raw = _resolve_default_model(aws_region)
+        model_id_raw = DEFAULT_MODEL_ID
 
     return Config(
         aws_region=aws_region,

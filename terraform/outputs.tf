@@ -40,3 +40,23 @@ output "agent_execution_log_group" {
   value = aws_cloudwatch_log_group.agent_execution.name
 }
 
+# Demo log group for injected simulated application logs
+output "demo_log_group" {
+  value = aws_cloudwatch_log_group.demo_app_logs.name
+}
+
+# Log watcher Lambda function name (triggered by CloudWatch Logs subscription filter)
+output "log_watcher_lambda_name" {
+  value = aws_lambda_function.log_watcher.function_name
+}
+
+# CloudWatch Log Group where the agent writes remediation actions
+output "remediation_log_group" {
+  value = aws_cloudwatch_log_group.remediation.name
+}
+
+# Endpoint ARN for programmatic invocation of the agent runtime
+output "agent_runtime_endpoint_arn" {
+  value = aws_bedrockagentcore_agent_runtime_endpoint.this.agent_runtime_endpoint_arn
+}
+

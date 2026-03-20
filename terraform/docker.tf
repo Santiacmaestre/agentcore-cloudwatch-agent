@@ -26,6 +26,7 @@ resource "null_resource" "docker_build_push" {
     logging_sha       = filesha256("${path.module}/../app/src/cw_sre_agent/logging.py")
     assume_role_sha   = filesha256("${path.module}/../app/src/cw_sre_agent/aws/assume_role.py")
     session_cache_sha = filesha256("${path.module}/../app/src/cw_sre_agent/aws/session_cache.py")
+    remediation_sha   = filesha256("${path.module}/../app/src/cw_sre_agent/remediation.py")
     image_tag         = var.image_tag
     repo_url          = local.ecr_registry
   }

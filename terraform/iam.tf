@@ -101,6 +101,17 @@ data "aws_iam_policy_document" "runtime_policy" {
     ]
     resources = ["arn:aws:bedrock-agentcore:${var.region}:*:memory/${aws_bedrockagentcore_memory.this.id}"]
   }
+
+  # Allows the agent to write remediation actions to the remediation log group
+  statement {
+    sid = "RemediationLogsWrite"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = ["${aws_cloudwatch_log_group.remediation.arn}:*"]
+  }
 }
 
 # Attaches the permissions policy inline to avoid a separate managed policy resource

@@ -29,12 +29,13 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
   }
 
   environment_variables = {
-    AWS_REGION       = var.region
-    MODEL_ID         = var.model_id
-    MAX_RESULT_CHARS = tostring(var.max_result_chars)
-    MEMORY_ID        = aws_bedrockagentcore_memory.this.id
-    MEMORY_ACTOR_ID  = var.memory_actor_id
-    AGENT_LOG_GROUP  = aws_cloudwatch_log_group.agent_execution.name
+    AWS_REGION             = var.region
+    MODEL_ID               = var.model_id
+    MAX_RESULT_CHARS       = tostring(var.max_result_chars)
+    MEMORY_ID              = aws_bedrockagentcore_memory.this.id
+    MEMORY_ACTOR_ID        = var.memory_actor_id
+    AGENT_LOG_GROUP        = aws_cloudwatch_log_group.agent_execution.name
+    REMEDIATION_LOG_GROUP  = aws_cloudwatch_log_group.remediation.name
   }
 
   depends_on = [
@@ -43,4 +44,13 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
     aws_bedrockagentcore_memory.this,
     aws_cloudwatch_log_group.agent_execution,
   ]
+}
+
+# Exposes the runtime as an invocable endpoint for the log_watcher Lambda
+resource "aws_bedrockagentcore_agent_runtime_endpoint" "this" {
+  name             = "${replace(var.agent_name, "-", "_")}_endpoint"
+  agent_runtime_id = aws_bedrockagentcore_agent_runtime.this.agent_runtime_id
+  description      = "Endpoint for Lambda-driven invocation of the SRE agent"
+
+  depends_on = [aws_bedrockagentcore_agent_runtime.this]
 }

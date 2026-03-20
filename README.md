@@ -1,18 +1,22 @@
 # agentcore-cloudwatch-agent
 
-Proof-of-concept SRE incident-troubleshooting agent built on **Amazon Bedrock AgentCore**.  
-The agent uses a conversational interface to investigate CloudWatch Logs, metrics, and alarms across multiple AWS accounts and regions — powered by the **Strands Agents SDK** and the CloudWatch MCP server.
+Proof-of-concept SRE incident-troubleshooting agent built on **Amazon Bedrock AgentCore**.
+Automatically monitors CloudWatch Logs, detects errors, invokes the agent via a Lambda subscription filter watcher, and logs remediation findings to a dedicated CloudWatch Log Group.
+
+Powered by **Anthropic Claude Sonnet 4.6** (via Bedrock), the **Strands Agents SDK**, and the CloudWatch MCP server.
 
 
 ## Overview
 
 | Layer               | Technology                                                    |
 |---------------------|---------------------------------------------------------------|
-| LLM                 | Amazon Nova Premier / Nova Pro via Strands Agents SDK         |
+| LLM                 | Anthropic Claude Sonnet 4.6 via Strands Agents SDK            |
 | Agentic framework   | Strands Agents SDK (`strands-agents`, `strands-agents-tools`) |
 | Runtime             | Amazon Bedrock AgentCore (arm64 container)                    |
 | Persistent memory   | AgentCore Memory with session-scoped summarization            |
-| Observability tools | `awslabs.cloudwatch-mcp-server` (MCP over stdio)             |
+| Observability tools | `awslabs.cloudwatch-mcp-server` (MCP over stdio)              |
+| Log monitoring      | CloudWatch Logs Subscription Filter → Lambda watcher          |
+| Remediation         | Agent findings logged to CloudWatch Log Group                 |
 | Infrastructure      | Terraform (AWS provider ≥ 6.17)                               |
 | Application         | Python 3.12+ packaged with `uv`                               |
 
@@ -20,34 +24,50 @@ The agent uses a conversational interface to investigate CloudWatch Logs, metric
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Developer / CI                                                     │
-│  terraform apply  ──►  ECR (arm64 image)  ──►  AgentCore Runtime    │
-└─────────────────────────────────────────────────────────────────────┘
-                                                        │
-                          ┌─────────────────────────────▼──────────────┐
-                          │           AgentCore Runtime                │
-                          │  ┌──────────────────────────────────────┐  │
-                          │  │  Python container (cw_sre_agent)     │  │
-                          │  │  ┌──────────┐  ┌───────────────────┐ │  │
-                          │  │  │  CLI /   │  │  Strands Agent    │ │  │
-                          │  │  │  REPL    │  │  (agentic loop)   │ │  │
-                          │  │  └────┬─────┘  └─────────┬─────────┘ │  │
-                          │  │       │                  │           │  │
-                          │  │  ┌────▼──────────────────▼─────────┐ │  │
-                          │  │  │     MCPClient (Strands SDK)     │ │  │
-                          │  │  │     CloudWatch MCP Server       │ │  │
-                          │  │  └─────────────────────────────────┘ │  │
-                          │  └──────────────────────────────────────┘  │
-                          │                   │                        │
-                          │  AgentCore Memory (cross-session recall)   │
-                          └────────────────────────────────────────────┘
-                                              │
-                          ┌───────────────────▼───────────────────────┐
-                          │  Target AWS Accounts (via sts:AssumeRole) │
-                          │  CloudWatch Logs · Metrics · Alarms       │
-                          └───────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Developer / Infrastructure                                                  │
+│  terraform apply  ──►  ECR (arm64 image)  ──►  AgentCore Runtime             │
+│                                                        ▲ (manual invocation) │
+└────────────────────────────────────────────────────────┼─────────────────────┘
+                                                         │
+                    ┌─────────────────────────────────────┴──────────────────┐
+                    │                                                        │
+         ┌──────────▼──────────┐                    ┌──────────────────────┐ │
+         │ CloudWatch Logs     │                    │  AgentCore Runtime   │ │
+         │ /demo/app-logs      │                    │  ┌────────────────┐  │ │
+         │ (mixed logs)        │                    │  │ Python Agent   │  │ │
+         └──────────┬──────────┘                    │  │ + Strands SDK  │  │ │
+                    │                               │  │ + CloudWatch   │  │ │
+                    │ Subscription                  │  │   MCP Server   │  │ │
+                    │ Filter (ERROR/CRITICAL)       │  └────┬───────────┘  │ │
+                    │                               │       │              │ │
+                    ▼                               └───────┼──────────────┘ │
+         ┌──────────────────────┐                           │                │
+         │ log-watcher Lambda   │                           ▼                │
+         │ - Filters ERROR logs │       ┌────────────────────────────────────┤
+         │ - Writes summary     │──┐    │ CloudWatch Log Group               │
+         │   to SSM             │  │    │ /sre-agent/remediations            │
+         └──────────────────────┘  │    │ {user_prompt, final_answer}        │
+                                   │    └────────────────────────────────────┤
+                                   │    │ SSM Parameter Store                │
+                                   └──► │ /sre-agent/error-detected          │
+                                        └────────────────────────────────────┤
+                                            AgentCore Memory (cross-session) │
+                                        └────────────────────────────────────┘
 ```
+
+
+## Demo Flow
+
+1. **Inject demo logs** – A script pushes ~150 log events (80% normal, 20% errors) to CloudWatch Logs
+2. **Subscription filter triggers** – CloudWatch Logs subscription filter detects ERROR/CRITICAL level events
+3. **log-watcher Lambda filters** – Lambda extracts error summary and writes to SSM (`/sre-agent/error-detected`)
+4. **Agent invocation** – User manually invokes the agent via `run_demo.sh` to analyze logs (can be automated via EventBridge/SNS)
+5. **Agent analyzes** – The SRE agent queries CloudWatch Logs, identifies patterns, counts, and severity
+6. **Findings logged** – The server automatically logs the user prompt and the agent's full analysis to `/sre-agent/remediations`
+7. **Verification** – Query the remediation log group to see findings
+
+**Semi-automated flow:** Lambda detects and summarizes errors; user/automation triggers agent analysis.
 
 
 ## Repository Layout
@@ -56,15 +76,24 @@ The agent uses a conversational interface to investigate CloudWatch Logs, metric
 agentcore-cloudwatch-agent/
 ├── app/                      # Python agent application
 │   ├── src/cw_sre_agent/     # Agent source code
+│   │   ├── remediation.py    # CloudWatch sink for remediation log group
+│   │   └── ...               # agent, config, server, cli, etc.
 │   ├── scripts/              # build_and_push.sh, run_local.sh
 │   ├── Dockerfile            # arm64 container image
 │   ├── invoke_agent.py       # Remote runtime invocation helper
 │   ├── pyproject.toml        # Package metadata & dependencies
 │   └── README.md             # → Application guide
+├── lambda/                   # Lambda functions
+│   └── log_watcher.py        # Subscription filter watcher → invokes AgentCore
+├── scripts/                  # Demo scripts
+│   ├── run_demo.sh           # End-to-end demo (inject logs → wait → verify)
+│   └── inject_demo_logs.py   # Injects sample logs with errors
 └── terraform/                # Infrastructure as code
     ├── agentcore.tf          # AgentCore runtime resource
+    ├── log_watcher.tf        # log-watcher Lambda + IAM role
+    ├── demo.tf               # Demo log group + subscription filter + remediation log group
     ├── memory.tf             # AgentCore Memory + summarization strategy
-    ├── iam.tf                # Execution role & inline policy
+    ├── iam.tf                # AgentCore execution role & inline policy
     ├── ecr.tf                # ECR repository + lifecycle policy
     ├── docker.tf             # null_resource: build & push on change
     ├── cloudwatch.tf         # CloudWatch log group
@@ -88,51 +117,120 @@ agentcore-cloudwatch-agent/
 
 ## Getting Started
 
+### Prerequisites
+
+Ensure you have:
+- **AWS CLI v2** with credentials configured (Bedrock API access required)
+- **Docker 24+** with buildx support (`docker buildx version`)
+- **Terraform 1.5+** (AWS provider ≥ 6.17 auto-fetched)
+- **Python 3.12+** with pip/uv
+- **AWS account** with Bedrock access in your region (default: `us-west-2`)
+
 ### 1. Provision infrastructure
 
 ```bash
 cd terraform/
 terraform init
-terraform apply
+terraform apply -var region=us-west-2
 ```
 
-`terraform apply` will:
-- Create an ECR repository
-- Build & push the arm64 Docker image
-- Provision an AgentCore runtime wired to Bedrock
-- Create an AgentCore Memory resource with summarization
-- Set up CloudWatch log group and IAM execution role
+**What gets created:**
+- ECR repository for arm64 agent image
+- AgentCore runtime (Sonnet 4.6 via Bedrock)
+- AgentCore Memory resource
+- CloudWatch Logs demo group (`/demo/app-logs`)
+- **log-watcher Lambda** (triggered by subscription filter)
+- Subscription filter on demo logs (ERROR/CRITICAL pattern)
+- Remediation log group (`/sre-agent/remediations`)
+- IAM roles for AgentCore runtime and Lambda
 
 See [terraform/README.md](terraform/README.md) for all variables and outputs.
 
-### 2. Run the agent
+### 2. Run the demo
 
-**Remote** (via the deployed AgentCore runtime):
+**Step A: Inject logs and trigger Lambda filter**
+```bash
+./scripts/run_demo.sh us-west-2
+```
+
+This script:
+1. Injects ~150 mixed log events (80% normal, 20% errors) to `/demo/app-logs`
+2. CloudWatch subscription filter detects ERROR/CRITICAL events
+3. log-watcher Lambda writes error summary to SSM (`/sre-agent/error-detected`)
+4. Shows the SSM error alert
+
+**Step B: Manually invoke the agent** (can be automated via EventBridge/SNS)
+
+Once the log-watcher Lambda has written the error summary, invoke the agent:
 
 ```bash
 cd app/
-# ARN is discovered automatically from terraform output
-python invoke_agent.py --interactive
+# Get the runtime ARN from Terraform
+RUNTIME_ARN=$(cd ../terraform && terraform output -raw agent_runtime_arn)
+
+# Invoke the agent with a prompt to analyze the log group
+python invoke_agent.py \
+  --runtime-arn "$RUNTIME_ARN" \
+  --prompt "Analyse the log group /demo/app-logs for the last 24 hours. Look for errors and trigger remediation."
 ```
 
-**Local** (for development):
+The agent will:
+- Query CloudWatch Logs Insights
+- Identify error patterns and severity
+- Its full analysis is automatically logged to `/sre-agent/remediations`
+
+### 3. Inspect results
+
+```bash
+# View the latest remediation event logged by the agent
+aws logs get-log-events \
+  --log-group-name /sre-agent/remediations \
+  --log-stream-name remediation-actions \
+  --region us-west-2 \
+  --limit 5 \
+  --start-from-head false \
+  --query 'events[].message' \
+  --output text | python3 -m json.tool
+```
+
+Expected output:
+```json
+{
+  "level": "INFO",
+  "event": "final_answer",
+  "session_id": "d261d5b6-bf69-450b-956a-c22be2ed3fbb",
+  "correlation_id": "046262e7-59c9-4a58-bb40-13e71e9426c7",
+  "ts": "2026-03-08T14:30:00Z",
+  "final_answer": "## Incident Analysis — /demo/app-logs\n\n| Error Type | Category | Severity | Action |\n|---|---|---|---|\n| DatabaseConnectionError | database | CRITICAL | scale_up_connections |\n| BadGateway | http | HIGH | restart_service |\n..."
+}
+```
+
+### 4. (Optional) Interactive agent use
+
+For interactive conversations with the agent:
 
 ```bash
 cd app/
-cp .env.example .env   # fill in AWS_REGION, MODEL_ID, MEMORY_ID, MEMORY_ACTOR_ID
-./scripts/run_local.sh
+# Discover runtime ARN from terraform outputs
+RUNTIME_ARN=$(cd ../terraform && terraform output -raw agent_runtime_arn)
+python invoke_agent.py --prompt "Analyse /demo/app-logs for the last 24 hours"
 ```
 
-See [app/README.md](app/README.md) for the interactive commands, cross-account setup, and build instructions.
+See [app/README.md](app/README.md) for more interactive commands and cross-account setup.
 
 
 ## Key Design Decisions
 
+- **Anthropic Claude Sonnet 4.6** – top-tier reasoning model via Bedrock cross-region inference, no fallback to other models.
+- **Filtered error detection** – CloudWatch Logs subscription filter detects ERROR/CRITICAL events automatically; Lambda watcher writes summaries to SSM for downstream consumption.
+- **CloudWatch remediation log** – agent findings are automatically logged to `/sre-agent/remediations` as structured JSON events, preserving full investigation history instead of overwriting a single SSM parameter.
+- **Manual agent invocation** – user or automation (via EventBridge/SNS) invokes the agent after log-watcher Lambda detects errors. Flexible, testable, doesn't require private endpoint access.
 - **Strands Agents SDK** – the entire agentic loop (tool discovery, execution, retry, conversation history) is delegated to Strands, replacing manual Bedrock Converse API calls.
 - **Dynamic tool discovery** – the Strands `MCPClient` discovers all tools via the MCP `tools/list` protocol, so CloudWatch MCP server updates are reflected automatically.
 - **Cross-account via STS** – assumed-role credentials are injected as environment variables into the MCP subprocess, keeping the agent in the trusted account.
 - **arm64 only** – AgentCore runtimes run exclusively on arm64; the Docker build uses `buildx --platform linux/arm64`.
 - **Content-addressable Docker builds** – `docker.tf` hashes source files as Terraform triggers so the image is only rebuilt when code actually changes.
+- **Cost optimization** – Lambda filters before invocation, so AgentCore is only called when errors exist.
 
 
 ## License
